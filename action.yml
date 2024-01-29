@@ -1,0 +1,80 @@
+name: Upload lambda functions
+description: Upload lambda functions to aws
+inputs:
+  functionName:
+    description: name of the lambda function
+    required: true
+  path:
+    description: path of artifact
+    required: true    
+runs:
+  using: composite
+    
+  steps:
+    - name: Get python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependicies
+      shell: bash
+      run: pip install boto3
+
+    - name: download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{inputs.path}}
+        path: downloaded_deployment_package 
+        
+    - name: Check If lambda exists
+      shell: python
+      run: |
+        import boto3
+        import os
+        client = boto3.client('lambda')
+        name = os.environ['functionName']
+        env_file = os.getenv('GITHUB_ENV')
+        try:
+            response = client.get_function(
+                FunctionName=name,
+            )
+            with open(env_file, "a") as myfile:
+                myfile.write("lambda_exists=yes")
+        except Exception as e:
+            with open(env_file, "a") as myfile:
+                myfile.write("lambda_exists=no")
+    - name: Update Lambda
+      if: env.lambda_exists=='yes'
+      shell: bash
+      run: |
+        echo "update lambda"
+        ls
+        cd downloaded_deployment_package
+        zip -r ../downloaded_deployment_package.zip .
+        cd ..
+        aws lambda update-function-code --function-name ${{inputs.functionName}} --zip-file fileb://${{github.workspace}}/downloaded_deployment_package.zip
+        sleep 10s
+        aws lambda  publish-version --function-name ${{inputs.functionName}}
+        VERSION=$(aws lambda publish-version --function-name ${{inputs.functionName}} | jq -r .Version)
+        sleep 10s
+        aws lambda update-alias --function-name ${{inputs.functionName}} --name staging --function-version $VERSION
+    - name: Create Lambda
+      if: env.lambda_exists=='no'
+      shell: bash
+      run: |
+        echo "create lambda"
+        ls
+        cd downloaded_deployment_package
+        zip -r ../downloaded_deployment_package.zip .
+        cd ..
+        aws lambda create-function --function-name ${{inputs.functionName}} --zip-file fileb://${{github.workspace}}/downloaded_deployment_package.zip --role  $roleName --handler $handler --runtime $runtime
+        sleep 10s
+        aws lambda  publish-version --function-name ${{inputs.functionName}}
+        VERSION=$(aws lambda publish-version --function-name ${{inputs.functionName}} | jq -r .Version)
+        sleep 10s
+        aws lambda create-alias --function-name ${{inputs.functionName}} --name staging --function-version $VERSION
+    - name: Add layers
+      shell: bash
+      if: env.lambda_exists=='no'
+      run: |
+        echo "Add layers"
